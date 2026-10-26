@@ -66,7 +66,7 @@ function detect(a){
   const levels=[...makeZones(highs,'Resistance'),...makeZones(lows,'Support')]
     .map(z=>({...z,score:z.count*3+Math.min(z.bodyTouches,8)*.35+z.recent/a.length}))
     .sort((x,y)=>y.score-x.score)
-    .slice(0,10);
+    .slice(0,6);
   levels.forEach(z=>z.kind=z.count>=5?'Critical':z.count>=4?'Major':'Key');
   return {highs,lows,levels,lo:allLow,hi:allHigh,tolerance:tol};
 }
