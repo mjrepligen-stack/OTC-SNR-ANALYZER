@@ -33,15 +33,34 @@ function detect(a){
       const center=pts.reduce((s,p)=>s+p.price,0)/pts.length;
       const zoneLow=Math.min(...pts.map(p=>p.price))-tol*.45;
       const zoneHigh=Math.max(...pts.map(p=>p.price))+tol*.45;
-      let bodyTouches=0;
-      for(let i=0;i<a.length;i++){
-        const intersects=Math.max(a[i].open,a[i].close)>=zoneLow &&
-                          Math.min(a[i].open,a[i].close)<=zoneHigh;
-        if(intersects && !pts.some(p=>p.i===i)) bodyTouches++;
+      
+      const reactionCandles = new Set(pts.map(p => p.i));
+      let bodyTouches = 0;
+
+      for (let i = 0; i < a.length; i++) {
+        const intersects =
+          Math.max(a[i].open, a[i].close) >= zoneLow &&
+          Math.min(a[i].open, a[i].close) <= zoneHigh;
+
+        if (intersects && !reactionCandles.has(i)) {
+          bodyTouches++;
+          reactionCandles.add(i);
+        }
       }
-      return {price:center,zoneLow,zoneHigh,count:pts.length,type,
-              recent:Math.max(...pts.map(p=>p.i)),bodyTouches};
-    }).filter(z=>z.count>=3);
+
+      const reactionCount = reactionCandles.size;
+
+      return {
+        price: center,
+        zoneLow,
+        zoneHigh,
+        count: reactionCount,
+        type,
+        recent: Math.max(...pts.map(p => p.i)),
+        bodyTouches
+      };
+    }).filter(z => z.count >= 3);
+
   }
 
   const levels=[...makeZones(highs,'Resistance'),...makeZones(lows,'Support')]
