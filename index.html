@@ -21,11 +21,20 @@ function detect(a){
   // Cluster support and resistance separately so one zone is not mislabeled as both.
   function makeZones(points,type){
     const sorted=[...points].sort((x,y)=>x.price-y.price),clusters=[];
-    for(const p of sorted){
-      let c=clusters.find(z=>Math.abs(z.center-p.price)<=tol);
-      if(!c){c={points:[],center:p.price};clusters.push(c)}
-      c.points.push(p);
-      c.center=c.points.reduce((s,x)=>s+x.price,0)/c.points.length;
+    for (const p of sorted) {
+    let c = clusters.find(z =>
+        p.price >= Math.min(...z.points.map(x => x.price)) - tol &&
+        p.price <= Math.max(...z.points.map(x => x.price)) + tol
+    );
+
+    if (!c) {
+        c = { points: [], center: p.price };
+        clusters.push(c);
+    }
+
+    c.points.push(p);
+    c.center = c.points.reduce((s, x) => s + x.price, 0) / c.points.length;
+}
     }
     return clusters.map(c=>{
       const unique=new Map(c.points.map(p=>[p.i,p]));
