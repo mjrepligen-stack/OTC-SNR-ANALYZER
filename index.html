@@ -10,7 +10,7 @@ function detect(a){
   const allHigh=Math.max(...a.map(x=>x.high)),allLow=Math.min(...a.map(x=>x.low));
   const range=allHigh-allLow, close=Math.abs(a.at(-1).close);
   // A modest price tolerance groups nearby reactions into a zone.
-  const tol=Math.max(range*.025,close*.00008);
+  const tol=Math.max(range*.04,close*.00012);
   for(let i=1;i<a.length-1;i++){
     if(a[i].high>=a[i-1].high&&a[i].high>a[i+1].high)
       highs.push({price:a[i].high,i,type:'Resistance'});
