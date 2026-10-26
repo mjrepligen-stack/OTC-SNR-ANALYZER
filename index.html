@@ -75,14 +75,45 @@ function detect(a){
   const resistanceZones = makeZones(highs, 'Resistance');
 const supportZones = makeZones(lows, 'Support');
 
-const rankZones = zones => zones
-  .map(z => ({...z, score: z.count*3 + Math.min(z.bodyTouches,8)*.35 + z.recent/a.length}))
-  .sort((x,y) => y.score-x.score)
-  .slice(0,3);
+// Current price and visible chart range
+const currentPrice = a[a.length - 1].close;
+const chartHigh = Math.max(...a.map(c => c.high));
+const chartLow = Math.min(...a.map(c => c.low));
+const chartRange = chartHigh - chartLow;
+
+// Keep zones within 10% of the full chart range
+const maxDistance = chartRange * 0.10;
+
+const rankNearbyZones = (zones, type) => zones
+    .map(z => ({
+        ...z,
+        distance: Math.max(
+            0,
+            z.zoneLow > currentPrice ? z.zoneLow - currentPrice :
+            z.zoneHigh < currentPrice ? currentPrice - z.zoneHigh : 0
+        ),
+        score:
+            z.count * 3 +
+            Math.min(z.bodyTouches, 8) * 0.35 +
+            z.recent / a.length
+    }))
+    .filter(z => z.distance <= maxDistance)
+    .sort((x, y) =>
+        (y.score - y.distance / maxDistance * 2) -
+        (x.score - x.distance / maxDistance * 2)
+    )
+    .slice(0, 3)
+    .map(z => ({ ...z, type }));
 
 const levels = [
-  ...rankZones(resistanceZones),
-  ...rankZones(supportZones)
+    ...rankNearbyZones(resistanceZones, 'Resistance'),
+    ...rankNearbyZones(supportZones, 'Support')
+];
+
+levels.forEach(z => {
+    z.kind = z.count >= 5 ? 'Critical' :
+             z.count >= 4 ? 'Major' : 'Key';
+});
 ];
   levels.forEach(z=>z.kind=z.count>=5?'Critical':z.count>=4?'Major':'Key');
   return {highs,lows,levels,lo:allLow,hi:allHigh,tolerance:tol};
