@@ -90,6 +90,7 @@ function parseCSV(t) {
 }
 
 
+
 function detect(a) {
   const highs = [];
   const lows = [];
@@ -106,125 +107,172 @@ function detect(a) {
     };
   }
 
-  const tol = Math.max(range * 0.025, Math.abs(currentPrice) * 0.00008);
+  // Adaptive tolerance for grouping nearby swing prices.
+  const tol = Math.max(
+    range * 0.04,
+    Math.abs(currentPrice) * 0.00012
+  );
 
-  // Identify swing highs and lows
+  // Detect swing highs and lows.
   for (let i = 1; i < a.length - 1; i++) {
-    if (a[i].high >= a[i - 1].high && a[i].high > a[i + 1].high) {
+    if (
+      a[i].high >= a[i - 1].high &&
+      a[i].high > a[i + 1].high
+    ) {
       highs.push({ price: a[i].high, i });
     }
 
-    if (a[i].low <= a[i - 1].low && a[i].low < a[i + 1].low) {
+    if (
+      a[i].low <= a[i - 1].low &&
+      a[i].low < a[i + 1].low
+    ) {
       lows.push({ price: a[i].low, i });
     }
   }
 
   function makeZones(points, type) {
-    const sorted = [...points].sort((x, y) => x.price - y.price);
+    const sorted = [...points].sort(
+      (x, y) => x.price - y.price
+    );
+
     const clusters = [];
 
+    // Group swing points around a cluster centre.
     for (const p of sorted) {
-      let c = clusters.find(z =>
-        p.price >= Math.min(...z.points.map(x => x.price)) - tol &&
-        p.price <= Math.max(...z.points.map(x => x.price)) + tol
-      );
+      let best = null;
+      let bestDistance = Infinity;
 
-      if (!c) {
-        c = { points: [] };
-        clusters.push(c);
+      for (const cluster of clusters) {
+        const center =
+          cluster.points.reduce((s, x) => s + x.price, 0) /
+          cluster.points.length;
+
+        const distance = Math.abs(p.price - center);
+
+        if (distance <= tol && distance < bestDistance) {
+          best = cluster;
+          bestDistance = distance;
+        }
       }
 
-      c.points.push(p);
+      if (best) {
+        best.points.push(p);
+      } else {
+        clusters.push({ points: [p] });
+      }
     }
 
-    return clusters.map(c => {
-      const pts = [...c.points].sort((x, y) => x.i - y.i);
-      const center = pts.reduce((s, p) => s + p.price, 0) / pts.length;
-      const zoneLow = Math.min(...pts.map(p => p.price)) - tol * 0.45;
-      const zoneHigh = Math.max(...pts.map(p => p.price)) + tol * 0.45;
+    const zones = [];
 
-      // Count distinct wick rejections.
-      let reactions = [];
+    for (const cluster of clusters) {
+      const pts = [...cluster.points].sort(
+        (x, y) => x.i - y.i
+      );
+
+      const center =
+        pts.reduce((s, p) => s + p.price, 0) / pts.length;
+
+      const zoneLow =
+        Math.min(...pts.map(p => p.price)) - tol * 0.25;
+
+      const zoneHigh =
+        Math.max(...pts.map(p => p.price)) + tol * 0.25;
+
+      const reactions = [];
       let lastReaction = -10;
 
+      // Confirm each swing with the following three candles.
       for (const p of pts) {
         let rejected = false;
 
-        for (let j = p.i + 1; j <= Math.min(a.length - 1, p.i + 3); j++) {
+        for (
+          let j = p.i + 1;
+          j <= Math.min(a.length - 1, p.i + 3);
+          j++
+        ) {
           if (
             type === 'Resistance' &&
-            a[j].close < p.price - tol * 0.25
+            a[j].close < p.price - tol * 0.05
           ) {
             rejected = true;
+            break;
           }
 
           if (
             type === 'Support' &&
-            a[j].close > p.price + tol * 0.25
+            a[j].close > p.price + tol * 0.05
           ) {
             rejected = true;
+            break;
           }
         }
 
+        // Avoid counting nearby consecutive swing points twice.
         if (rejected && p.i - lastReaction > 3) {
           reactions.push(p);
           lastReaction = p.i;
         }
       }
 
-      return {
-        price: center,
-        zoneLow,
-        zoneHigh,
-        count: reactions.length,
-        bodyTouches: 0,
-        type,
-        recent: reactions.length
-          ? Math.max(...reactions.map(p => p.i))
-          : 0
-      };
-    }).filter(z => z.count >= 3);
+      if (reactions.length >= 3) {
+        zones.push({
+          price: center,
+          zoneLow,
+          zoneHigh,
+          count: reactions.length,
+          bodyTouches: 0,
+          type,
+          recent: Math.max(...reactions.map(p => p.i))
+        });
+      }
+    }
+
+    return zones;
   }
 
   const resistanceZones = makeZones(highs, 'Resistance');
   const supportZones = makeZones(lows, 'Support');
 
-  // Prioritize zones near the latest closing price.
+  // Keep zones within 10% of the visible price range.
   const maxDistance = range * 0.10;
 
-  function rankNearbyZones(zones, type) {
+  function rankNearbyZones(zones) {
     return zones
       .map(z => {
-        const distance = Math.max(
-          0,
+        const distance =
           z.zoneLow > currentPrice
             ? z.zoneLow - currentPrice
             : z.zoneHigh < currentPrice
               ? currentPrice - z.zoneHigh
-              : 0
-        );
+              : 0;
 
-        const score = z.count * 3 + z.recent / a.length;
+        const score =
+          z.count * 3 + z.recent / a.length;
 
         return { ...z, distance, score };
       })
       .filter(z => z.distance <= maxDistance)
-      .sort((x, y) =>
-        (y.score - y.distance / maxDistance * 2) -
-        (x.score - x.distance / maxDistance * 2)
-      )
-      .slice(0, 3)
-      .map(z => ({ ...z, type }));
+      .sort((x, y) => {
+        const scoreX =
+          x.score - (x.distance / maxDistance) * 2;
+
+        const scoreY =
+          y.score - (y.distance / maxDistance) * 2;
+
+        return scoreY - scoreX;
+      })
+      .slice(0, 3);
   }
 
   const levels = [
-    ...rankNearbyZones(resistanceZones, 'Resistance'),
-    ...rankNearbyZones(supportZones, 'Support')
+    ...rankNearbyZones(resistanceZones),
+    ...rankNearbyZones(supportZones)
   ];
 
   levels.forEach(z => {
-    z.kind = z.count >= 5 ? 'Critical' :
-             z.count >= 4 ? 'Major' : 'Key';
+    z.kind =
+      z.count >= 5 ? 'Critical' :
+      z.count >= 4 ? 'Major' : 'Key';
   });
 
   return {
@@ -236,6 +284,7 @@ function detect(a) {
     tolerance: tol
   };
 }
+
 
 function render() {
   if (candles.length < 2) return;
