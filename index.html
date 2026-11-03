@@ -1,1 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OTC SNR Analyzer</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f4f7fb;color:#182230;font:16px system-ui,-apple-system,Segoe UI,sans-serif}
+header{background:#fff;padding:18px;border-bottom:1px solid #dbe3ed}
+h1{margin:0;font-size:1.4rem}
+.sub{color:#64748b;font-size:.9rem}
+main{max-width:1150px;margin:auto;padding:16px;display:grid;gap:14px}
+.card{background:#fff;border:1px solid #dbe3ed;border-radius:13px;padding:15px}
+.notice{background:#fff7ed;color:#9a3412;padding:12px;border-radius:9px;font-size:.9rem}
+.controls,.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:12px;align-items:end}
+label{display:block;font-size:.82rem;color:#526176;margin-bottom:6px}
+select,input,button{width:100%;font:inherit;padding:10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}
+button{background:#1e40af;color:#fff;font-weight:650;cursor:pointer}
+.stat{background:#f8fafc;padding:12px;border-radius:9px}
+.stat small{display:block;color:#64748b}
+.stat strong{font-size:1.25rem}
+.layout{display:grid;gap:14px}
+svg{width:100%;height:auto;display:block}
+.levels{display:grid;gap:8px}
+.level{border:1px solid #e2e8f0;border-radius:8px;padding:10px;display:flex;justify-content:space-between;gap:10px;font-size:.88rem}
+.pill{font-size:.75rem;background:#eef2ff;color:#3730a3;border-radius:999px;padding:3px 7px}
+.legend{display:flex;gap:12px;flex-wrap:wrap;color:#64748b;font-size:.82rem;margin-top:8px}
+footer{text-align:center;color:#64748b;font-size:.8rem;padding:4px 15px 22px}
+@media(min-width:850px){.layout{grid-template-columns:1.5fr 1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>OTC SNR Analyzer</h1>
+  <div class="sub">Standalone browser tool · demo candles and CSV analysis</div>
+</header>
+<main>
+  <div class="notice"><b>Demo mode:</b> synthetic sample candles are not live Pocket Option prices. This tool describes historical price structure only. It does not place trades or predict future candles with certainty.</div>
 
+  <section class="card">
+    <div class="controls">
+      <div><label for="mode">Data source</label><select id="mode"><option value="demo">Demo candles (synthetic)</option><option value="csv">Uploaded CSV</option></select></div>
+      <div><label for="tf">Timeframe label</label><select id="tf"><option>H1</option><option>M5</option><option>M1</option></select></div>
+      <div><label for="pair">Pair label</label><select id="pair"><option>EUR/USD OTC</option><option>AUD/USD OTC</option><option>GBP/USD OTC</option><option>USD/JPY OTC</option><option>BTC/USD OTC</option><option>Custom CSV</option></select></div>
+      <div><label for="file">Candle CSV</label><input id="file" type="file" accept=".csv,text/csv"></div>
+      <div><button id="analyze" type="button">Analyze candles</button></div>
+    </div>
+    <p class="sub">CSV needs columns named <b>open, high, low, close</b>; a <b>time</b> column is recommended. Data is processed in this browser tab.</p>
+  </section>
+
+  <section class="card">
+    <div class="stats">
+      <div class="stat"><small>Candles analyzed</small><strong id="n">—</strong></div>
+      <div class="stat"><small>Swing highs</small><strong id="sh">—</strong></div>
+      <div class="stat"><small>Swing lows</small><strong id="sl">—</strong></div>
+      <div class="stat"><small>Latest close</small><strong id="last">—</strong></div>
+    </div>
+  </section>
+
+  <div class="layout">
+    <section class="card">
+      <h2 style="font-size:1.05rem;margin-top:0">Price chart &amp; S/R zones</h2>
+      <div id="chart"></div>
+      <div class="legend">
+        <span>🔵 Critical (5+ reactions)</span><span>🟠 Major (4 reactions)</span>
+        <span>🟢 Key (3 reactions)</span><span>Shaded band = zone range</span>
+        <span>Green/red candles = close up/down</span>
+      </div>
+    </section>
+    <section class="card">
+      <h2 style="font-size:1.05rem;margin-top:0">Detected levels (minimum 3 reactions)</h2>
+      <div id="levels" class="levels"></div>
+      <p id="status" class="sub"></p>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2 style="font-size:1.05rem;margin-top:0">Multi-timeframe workflow</h2>
+    <p>H1 focus: map larger support/resistance zones from separate swing reactions. M5 can later confirm price behaviour near a zone, and M1 can show local price action. This version analyzes one selected dataset at a time; the timeframe selector is a label only and does not load separate timeframe data.</p>
+  </section>
+</main>
+<footer>No login, subscription, API key, or trade connection required for demo/CSV analysis.</footer>
+
+<script>
+'use strict';
+
+const $ = id => document.getElementById(id);
+let candles = [];
+
+/* Deterministic test data: repeated upper and lower wick tests. */
+function demo() {
+  const a = [];
+  const pivots = [
+    [0, 1.08850], [8, 1.08972], [14, 1.08728],
+    [20, 1.08974], [26, 1.08726], [32, 1.08973],
+    [38, 1.08727], [44, 1.08975], [50, 1.08725],
+    [56, 1.08974], [62, 1.08726], [71, 1.08970]
+  ];
+
+  function closeAt(i) {
+    let k = 0;
+    while (k < pivots.length - 2 && i > pivots[k + 1][0]) k++;
+    const [i1, p1] = pivots[k];
+    const [i2, p2] = pivots[k + 1];
+    const f = (i - i1) / (i2 - i1);
+    return p1 + (p2 - p1) * f;
+  }
+
+  for (let i = 0; i < 72; i++) {
+    const close = closeAt(i);
+    const open = i === 0 ? 1.08850 : a[i - 1].close;
+    let high = Math.max(open, close) + 0.000035;
+    let low = Math.min(open, close) - 0.000035;
+
+    if ([8, 20, 32, 44, 56].includes(i)) high = 1.09000;
+    if ([14, 26, 38, 50, 62].includes(i)) low = 1.08700;
+
+    a.push({time:`Demo ${i + 1}`, open, high, low, close});
+  }
+  return a;
+}
+
+function parseCSV(text) {
+  const lines = text.replace(/^\uFEFF/, '').trim().split(/\r?\n/).filter(Boolean);
+  if (lines.length < 3) throw new Error('CSV needs a header and at least two candle rows.');
+
+  const split = line => line.split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+  const headers = split(lines[0]).map(v => v.toLowerCase());
+  const ix = {};
+  ['time','open','high','low','close'].forEach(k => ix[k] = headers.indexOf(k));
+
+  if (['open','high','low','close'].some(k => ix[k] < 0)) {
+    throw new Error('CSV header must include open, high, low, close.');
+  }
+
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    const row = split(lines[i]);
+    const o = Number(row[ix.open]), h = Number(row[ix.high]);
+    const l = Number(row[ix.low]), c = Number(row[ix.close]);
+    if ([o,h,l,c].every(Number.isFinite) && h >= Math.max(o,c,l) && l <= Math.min(o,c,h)) {
+      out.push({time: ix.time >= 0 ? (row[ix.time] || String(i)) : String(i), open:o, high:h, low:l, close:c});
+    }
+  }
+  if (out.length < 2) throw new Error('No valid candle rows found.');
+  return out.slice(-500);
+}
+
+/*
+  S/R logic:
+  - Swing point = local extreme with two candles on each side.
+  - Candidate prices are clustered by price proximity.
+  - Each confirmed swing is one reaction; reactions must be >= 4 candles apart.
+  - Rejection is confirmed by a subsequent close away from the swing extreme.
+  - Only zones near current price are displayed (10% of full visible range).
+*/
+function detect(data) {
+  const highs = [], lows = [];
+  const hi = Math.max(...data.map(c => c.high));
+  const lo = Math.min(...data.map(c => c.low));
+  const range = hi - lo;
+  const current = data[data.length - 1].close;
+
+  if (range <= 0) return {highs,lows,levels:[],lo,hi,tolerance:0};
+
+  const tolerance = Math.max(range * 0.035, Math.abs(current) * 0.00008);
+
+  for (let i = 2; i < data.length - 2; i++) {
+    const h = data[i].high, l = data[i].low;
+    if (h >= data[i-1].high && h > data[i-2].high &&
+        h >= data[i+1].high && h > data[i+2].high) highs.push({price:h,i});
+    if (l <= data[i-1].low && l < data[i-2].low &&
+        l <= data[i+1].low && l < data[i+2].low) lows.push({price:l,i});
+  }
+
+  function cluster(points, type) {
+    const sorted = [...points].sort((a,b) => a.price - b.price);
+    const groups = [];
+
+    for (const point of sorted) {
+      let selected = null, minDistance = Infinity;
+      for (const group of groups) {
+        const center = group.points.reduce((s,p) => s+p.price,0) / group.points.length;
+        const distance = Math.abs(point.price - center);
+        if (distance <= tolerance && distance < minDistance) {
+          selected = group;
+          minDistance = distance;
+        }
+      }
+      if (selected) selected.points.push(point);
+      else groups.push({points:[point]});
+    }
+
+    const zones = [];
+    for (const group of groups) {
+      const pointsByTime = [...group.points].sort((a,b) => a.i-b.i);
+      const reactions = [];
+      let lastIndex = -Infinity;
+
+      for (const p of pointsByTime) {
+        if (p.i - lastIndex < 4) continue;
+
+        let confirmed = false;
+        const confirmEnd = Math.min(data.length - 1, p.i + 3);
+        for (let j = p.i + 1; j <= confirmEnd; j++) {
+          if (type === 'Resistance' && data[j].close < p.price - tolerance * 0.04) {
+            confirmed = true;
+            break;
+          }
+          if (type === 'Support' && data[j].close > p.price + tolerance * 0.04) {
+            confirmed = true;
+            break;
+          }
+        }
+
+        if (confirmed) {
+          reactions.push(p);
+          lastIndex = p.i;
+        }
+      }
+
+      if (reactions.length >= 3) {
+        const prices = reactions.map(p => p.price);
+        const center = prices.reduce((s,v) => s+v,0) / prices.length;
+        zones.push({
+          type,
+          price:center,
+          zoneLow:Math.min(...prices) - tolerance * 0.20,
+          zoneHigh:Math.max(...prices) + tolerance * 0.20,
+          count:reactions.length,
+          bodyTouches:0,
+          recent:reactions[reactions.length - 1].i
+        });
+      }
+    }
+    return zones;
+  }
+
+  const candidates = [
+    ...cluster(highs,'Resistance'),
+    ...cluster(lows,'Support')
+  ];
+
+  const maxDistance = range * 0.10;
+  const levels = candidates.map(z => {
+    const distance = current < z.zoneLow ? z.zoneLow-current :
+                     current > z.zoneHigh ? current-z.zoneHigh : 0;
+    const kind = z.count >= 5 ? 'Critical' : z.count >= 4 ? 'Major' : 'Key';
+    const score = z.count * 3 + z.recent / data.length - (distance / maxDistance) * 2;
+    return {...z,distance,kind,score};
+  }).filter(z => z.distance <= maxDistance);
+
+  const resistance = levels.filter(z => z.type === 'Resistance')
+    .sort((a,b) => b.score-a.score).slice(0,3);
+  const support = levels.filter(z => z.type === 'Support')
+    .sort((a,b) => b.score-a.score).slice(0,3);
+
+  return {highs,lows,levels:[...resistance,...support],lo,hi,tolerance};
+}
+
+function render() {
+  if (candles.length < 2) return;
+  const d = detect(candles);
+
+  $('n').textContent = candles.length;
+  $('sh').textContent = d.highs.length;
+  $('sl').textContent = d.lows.length;
+  $('last').textContent = Number(candles[candles.length-1].close).toFixed(5);
+
+  const W=850,H=420,L=70,R=15,T=20,B=32;
+  const pw=W-L-R, ph=H-T-B;
+  const padding=(d.hi-d.lo)*0.08;
+  const min=d.lo-padding, max=d.hi+padding;
+  const y=v => T+(max-v)/(max-min)*ph;
+  const step=pw/candles.length;
+  const cw=Math.max(2,Math.min(8,step*0.55));
+  const colors={Critical:'#2563eb',Major:'#d97706',Key:'#0d9488'};
+
+  let svg=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Candlestick chart with support and resistance zones">`;
+
+  for(let j=0;j<5;j++){
+    const v=min+(max-min)*j/4, yy=y(v);
+    svg+=`<line x1="${L}" y1="${yy}" x2="${W-R}" y2="${yy}" stroke="#e8edf3"/>`;
+    svg+=`<text x="${L-7}" y="${yy+4}" text-anchor="end" font-size="10" fill="#64748b">${v.toFixed(5)}</text>`;
+  }
+
+  for(const z of d.levels){
+    const top=y(z.zoneHigh), bottom=y(z.zoneLow), mid=y(z.price);
+    svg+=`<rect x="${L}" y="${top}" width="${pw}" height="${Math.max(3,bottom-top)}" fill="${colors[z.kind]}" opacity=".15"/>`;
+    svg+=`<line x1="${L}" y1="${mid}" x2="${W-R}" y2="${mid}" stroke="${colors[z.kind]}" stroke-width="${z.kind==='Critical'?2:1.3}" stroke-dasharray="6 4"/>`;
+    svg+=`<text x="${L+4}" y="${mid-5}" font-size="10" fill="${colors[z.kind]}">${z.kind} ${z.type} ${z.price.toFixed(5)}</text>`;
+  }
+
+  candles.forEach((c,i)=>{
+    const x=L+i*step+step/2, yo=y(c.open), yc=y(c.close);
+    const yh=y(c.high), yl=y(c.low), up=c.close>=c.open;
+    const color=up?'#16a34a':'#dc2626';
+    svg+=`<line x1="${x}" y1="${yh}" x2="${x}" y2="${yl}" stroke="${color}"/>`;
+    svg+=`<rect x="${x-cw/2}" y="${Math.min(yo,yc)}" width="${cw}" height="${Math.max(1.5,Math.abs(yc-yo))}" fill="${up?'#bbf7d0':'#fecaca'}" stroke="${color}"/>`;
+  });
+
+  svg+=`<text x="${L}" y="${H-8}" font-size="11" fill="#64748b">Older</text>`;
+  svg+=`<text x="${W-R}" y="${H-8}" text-anchor="end" font-size="11" fill="#64748b">Latest candle</text></svg>`;
+  $('chart').innerHTML=svg;
+
+  $('levels').innerHTML=d.levels.length ? d.levels.map(z=>`
+    <div class="level">
+      <div><b>${z.kind} · ${z.type}</b><br>
+        <span class="sub">${z.count} separate swing reactions</span><br>
+        <span class="sub">Zone ${z.zoneLow.toFixed(5)} – ${z.zoneHigh.toFixed(5)}</span>
+      </div>
+      <div style="text-align:right"><b>${z.price.toFixed(5)}</b><br>
+        <span class="pill">${z.price>candles[candles.length-1].close?'Above close':'At/below close'}</span>
+      </div>
+    </div>`).join('') : 'No clear nearby zones with 3+ separate swing reactions detected.';
+
+  $('status').textContent=`Source: ${$('mode').value==='demo'?'synthetic demo':'uploaded CSV'} · ${$('tf').value} label · descriptive analysis only.`;
+}
+
+$('mode').addEventListener('change',()=>{
+  if($('mode').value==='demo'){candles=demo();render();}
+});
+
+$('file').addEventListener('change',async event=>{
+  const file=event.target.files[0];
+  if(!file)return;
+  try{
+    candles=parseCSV(await file.text());
+    $('mode').value='csv';
+    $('pair').value='Custom CSV';
+    render();
+  }catch(error){
+    alert(error.message);
+  }
+});
+
+$('analyze').addEventListener('click',()=>{
+  if($('mode').value==='demo'){
+    candles=demo();
+    render();
+  }else if(!$('file').files[0]){
+    alert('Choose a candle CSV file first.');
+  }else{
+    $('file').dispatchEvent(new Event('change'));
+  }
+});
+
+// Start the app with demo data.
+candles=demo();
+render();
+</script>
+</body>
+</html>
