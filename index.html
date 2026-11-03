@@ -6,37 +6,199 @@
 const $ = id => document.getElementById(id);
 let candles = [];
 
-function demo() {
-  let a = [], p = 1.0874, seed = 73421;
 
-  const r = () => {
-    seed = (seed * 16807) % 2147483647;
-    return (seed - 1) / 2147483646;
-  };
+function detect(a) {
+  const highs = [];
+  const lows = [];
 
-  for (let i = 0; i < 72; i++) {
-    let drift = i < 16 ? .00034 :
-                i < 27 ? -.00022 :
-                i < 42 ? .00018 :
-                i < 55 ? -.00028 : .00012;
+  const allHigh = Math.max(...a.map(x => x.high));
+  const allLow = Math.min(...a.map(x => x.low));
+  const range = allHigh - allLow;
+  const currentPrice = a[a.length - 1].close;
 
-    let o = p;
-    let c = o + drift + (r() - .52) * .00055;
-    let h = Math.max(o, c) + r() * .00028;
-    let l = Math.min(o, c) - r() * .00028;
-
-    a.push({
-      time: `Demo ${i + 1}`,
-      open: o,
-      high: h,
-      low: l,
-      close: c
-    });
-
-    p = c;
+  if (range <= 0) {
+    return {
+      highs, lows, levels: [],
+      lo: allLow, hi: allHigh, tolerance: 0
+    };
   }
 
-  return a;
+  // Adaptive tolerance for grouping nearby swing prices.
+  const tol = Math.max(
+    range * 0.04,
+    Math.abs(currentPrice) * 0.00012
+  );
+
+  // Detect swing highs and lows.
+  for (let i = 1; i < a.length - 1; i++) {
+    if (
+      a[i].high >= a[i - 1].high &&
+      a[i].high > a[i + 1].high
+    ) {
+      highs.push({ price: a[i].high, i });
+    }
+
+    if (
+      a[i].low <= a[i - 1].low &&
+      a[i].low < a[i + 1].low
+    ) {
+      lows.push({ price: a[i].low, i });
+    }
+  }
+
+  function makeZones(points, type) {
+    const sorted = [...points].sort(
+      (x, y) => x.price - y.price
+    );
+
+    const clusters = [];
+
+    // Group swing points around a cluster centre.
+    for (const p of sorted) {
+      let best = null;
+      let bestDistance = Infinity;
+
+      for (const cluster of clusters) {
+        const center =
+          cluster.points.reduce((s, x) => s + x.price, 0) /
+          cluster.points.length;
+
+        const distance = Math.abs(p.price - center);
+
+        if (distance <= tol && distance < bestDistance) {
+          best = cluster;
+          bestDistance = distance;
+        }
+      }
+
+      if (best) {
+        best.points.push(p);
+      } else {
+        clusters.push({ points: [p] });
+      }
+    }
+
+    const zones = [];
+
+    for (const cluster of clusters) {
+      const pts = [...cluster.points].sort(
+        (x, y) => x.i - y.i
+      );
+
+      const center =
+        pts.reduce((s, p) => s + p.price, 0) / pts.length;
+
+      const zoneLow =
+        Math.min(...pts.map(p => p.price)) - tol * 0.25;
+
+      const zoneHigh =
+        Math.max(...pts.map(p => p.price)) + tol * 0.25;
+
+      const reactions = [];
+      let lastReaction = -10;
+
+      // Confirm each swing with the following three candles.
+      for (const p of pts) {
+        let rejected = false;
+
+        for (
+          let j = p.i + 1;
+          j <= Math.min(a.length - 1, p.i + 3);
+          j++
+        ) {
+          if (
+            type === 'Resistance' &&
+            a[j].close < p.price - tol * 0.05
+          ) {
+            rejected = true;
+            break;
+          }
+
+          if (
+            type === 'Support' &&
+            a[j].close > p.price + tol * 0.05
+          ) {
+            rejected = true;
+            break;
+          }
+        }
+
+        // Avoid counting nearby consecutive swing points twice.
+        if (rejected && p.i - lastReaction > 3) {
+          reactions.push(p);
+          lastReaction = p.i;
+        }
+      }
+
+      if (reactions.length >= 3) {
+        zones.push({
+          price: center,
+          zoneLow,
+          zoneHigh,
+          count: reactions.length,
+          bodyTouches: 0,
+          type,
+          recent: Math.max(...reactions.map(p => p.i))
+        });
+      }
+    }
+
+    return zones;
+  }
+
+  const resistanceZones = makeZones(highs, 'Resistance');
+  const supportZones = makeZones(lows, 'Support');
+
+  // Keep zones within 10% of the visible price range.
+  const maxDistance = range * 0.10;
+
+  function rankNearbyZones(zones) {
+    return zones
+      .map(z => {
+        const distance =
+          z.zoneLow > currentPrice
+            ? z.zoneLow - currentPrice
+            : z.zoneHigh < currentPrice
+              ? currentPrice - z.zoneHigh
+              : 0;
+
+        const score =
+          z.count * 3 + z.recent / a.length;
+
+        return { ...z, distance, score };
+      })
+      .filter(z => z.distance <= maxDistance)
+      .sort((x, y) => {
+        const scoreX =
+          x.score - (x.distance / maxDistance) * 2;
+
+        const scoreY =
+          y.score - (y.distance / maxDistance) * 2;
+
+        return scoreY - scoreX;
+      })
+      .slice(0, 3);
+  }
+
+  const levels = [
+    ...rankNearbyZones(resistanceZones),
+    ...rankNearbyZones(supportZones)
+  ];
+
+  levels.forEach(z => {
+    z.kind =
+      z.count >= 5 ? 'Critical' :
+      z.count >= 4 ? 'Major' : 'Key';
+  });
+
+  return {
+    highs,
+    lows,
+    levels,
+    lo: allLow,
+    hi: allHigh,
+    tolerance: tol
+  };
 }
 
 function parseCSV(t) {
