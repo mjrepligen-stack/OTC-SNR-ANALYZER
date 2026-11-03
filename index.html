@@ -89,6 +89,7 @@ function parseCSV(t) {
   return a.slice(-500);
 }
 
+
 function detect(a) {
   const highs = [];
   const lows = [];
@@ -105,30 +106,21 @@ function detect(a) {
     };
   }
 
-  const tol = Math.max(
-    range * 0.04,
-    Math.abs(currentPrice) * 0.00012
-  );
+  const tol = Math.max(range * 0.025, Math.abs(currentPrice) * 0.00008);
 
-  // Identify swing highs and swing lows.
+  // Identify swing highs and lows
   for (let i = 1; i < a.length - 1; i++) {
-    if (a[i].high >= a[i - 1].high &&
-        a[i].high > a[i + 1].high) {
+    if (a[i].high >= a[i - 1].high && a[i].high > a[i + 1].high) {
       highs.push({ price: a[i].high, i });
     }
 
-    if (a[i].low <= a[i - 1].low &&
-        a[i].low < a[i + 1].low) {
+    if (a[i].low <= a[i - 1].low && a[i].low < a[i + 1].low) {
       lows.push({ price: a[i].low, i });
     }
   }
 
-  // Group swing points into separate price zones.
   function makeZones(points, type) {
-    const sorted = [...points].sort(
-      (x, y) => x.price - y.price
-    );
-
+    const sorted = [...points].sort((x, y) => x.price - y.price);
     const clusters = [];
 
     for (const p of sorted) {
@@ -147,38 +139,37 @@ function detect(a) {
 
     return clusters.map(c => {
       const pts = [...c.points].sort((x, y) => x.i - y.i);
+      const center = pts.reduce((s, p) => s + p.price, 0) / pts.length;
+      const zoneLow = Math.min(...pts.map(p => p.price)) - tol * 0.45;
+      const zoneHigh = Math.max(...pts.map(p => p.price)) + tol * 0.45;
 
-      const center = pts.reduce(
-        (s, p) => s + p.price, 0
-      ) / pts.length;
-
-      const zoneLow =
-        Math.min(...pts.map(p => p.price)) - tol * 0.45;
-
-      const zoneHigh =
-        Math.max(...pts.map(p => p.price)) + tol * 0.45;
-
-      // Count distinct swing reactions.
-      // Swing points within 3 candles count as one event.
+      // Count distinct wick rejections.
       let reactions = [];
       let lastReaction = -10;
 
       for (const p of pts) {
-        if (p.i - lastReaction > 3) {
+        let rejected = false;
+
+        for (let j = p.i + 1; j <= Math.min(a.length - 1, p.i + 3); j++) {
+          if (
+            type === 'Resistance' &&
+            a[j].close < p.price - tol * 0.25
+          ) {
+            rejected = true;
+          }
+
+          if (
+            type === 'Support' &&
+            a[j].close > p.price + tol * 0.25
+          ) {
+            rejected = true;
+          }
+        }
+
+        if (rejected && p.i - lastReaction > 3) {
           reactions.push(p);
           lastReaction = p.i;
         }
-      }
-
-      // Count candle-body confluence separately.
-      let bodyTouches = 0;
-
-      for (let i = 0; i < a.length; i++) {
-        const intersects =
-          Math.max(a[i].open, a[i].close) >= zoneLow &&
-          Math.min(a[i].open, a[i].close) <= zoneHigh;
-
-        if (intersects) bodyTouches++;
       }
 
       return {
@@ -186,7 +177,7 @@ function detect(a) {
         zoneLow,
         zoneHigh,
         count: reactions.length,
-        bodyTouches,
+        bodyTouches: 0,
         type,
         recent: reactions.length
           ? Math.max(...reactions.map(p => p.i))
@@ -198,8 +189,7 @@ function detect(a) {
   const resistanceZones = makeZones(highs, 'Resistance');
   const supportZones = makeZones(lows, 'Support');
 
-  // Show only zones within 10% of the full chart range
-  // from the latest closing price.
+  // Prioritize zones near the latest closing price.
   const maxDistance = range * 0.10;
 
   function rankNearbyZones(zones, type) {
@@ -214,10 +204,7 @@ function detect(a) {
               : 0
         );
 
-        const score =
-          z.count * 3 +
-          Math.min(z.bodyTouches, 8) * 0.35 +
-          z.recent / a.length;
+        const score = z.count * 3 + z.recent / a.length;
 
         return { ...z, distance, score };
       })
